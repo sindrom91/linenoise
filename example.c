@@ -1,7 +1,7 @@
+#include <windows.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/select.h>
 #include "linenoise.h"
 
 void completion(const char *buf, linenoiseCompletions *lc) {
@@ -12,7 +12,7 @@ void completion(const char *buf, linenoiseCompletions *lc) {
 }
 
 char *hints(const char *buf, int *color, int *bold) {
-    if (!strcasecmp(buf,"hello")) {
+    if (!_stricmp(buf,"hello")) {
         *color = 35;
         *bold = 0;
         return " World";
@@ -71,32 +71,30 @@ int main(int argc, char **argv) {
             char buf[1024];
             linenoiseEditStart(&ls,-1,-1,buf,sizeof(buf),"hello> ");
             while(1) {
-		fd_set readfds;
-		struct timeval tv;
-		int retval;
-
-		FD_ZERO(&readfds);
-		FD_SET(ls.ifd, &readfds);
-		tv.tv_sec = 1; // 1 sec timeout
-		tv.tv_usec = 0;
-
-		retval = select(ls.ifd+1, &readfds, NULL, NULL, &tv);
-		if (retval == -1) {
-		    perror("select()");
-                    exit(1);
-		} else if (retval) {
-		    line = linenoiseEditFeed(&ls);
-                    /* A NULL return means: line editing is continuing.
-                     * Otherwise the user hit enter or stopped editing
-                     * (CTRL+C/D). */
-                    if (line != linenoiseEditMore) break;
-		} else {
-		    // Timeout occurred
-                    static int counter = 0;
-                    linenoiseHide(&ls);
-		    printf("Async output %d.\n", counter++);
-                    linenoiseShow(&ls);
-		}
+                HANDLE h = GetStdHandle(STD_INPUT_HANDLE);
+                DWORD retval = WaitForSingleObject(h, 1000);
+                if (retval == WAIT_OBJECT_0) {
+                  INPUT_RECORD record;
+                  DWORD read;
+                  if (PeekConsoleInput(h, &record, 1, &read) && read > 0) {
+                      if (record.EventType == KEY_EVENT && record.Event.KeyEvent.bKeyDown) {
+                        line = linenoiseEditFeed(&ls);
+                        /* A NULL return means: line editing is continuing.
+                         * Otherwise the user hit enter or stopped editing
+                         * (CTRL+C/D). */
+                        if (line != linenoiseEditMore) break;
+                      } else {
+                          // It was a mouse move, key release, etc. Flush it and move on.
+                          ReadConsoleInput(h, &record, 1, &read);
+                      }
+                  }
+                } else {
+                  // Timeout occurred
+                  static int counter = 0;
+                  linenoiseHide(&ls);
+                  printf("Async output %d.\n", counter++);
+                  linenoiseShow(&ls);
+                }
             }
             linenoiseEditStop(&ls);
             if (line == NULL) exit(0); /* Ctrl+D/C. */

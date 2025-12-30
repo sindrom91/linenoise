@@ -103,8 +103,8 @@
  *
  */
 
-#include <termios.h>
-#include <unistd.h>
+#include <windows.h>
+#include <io.h>
 #include <stdlib.h>
 #include <stdio.h>
 #include <errno.h>
@@ -113,9 +113,10 @@
 #include <ctype.h>
 #include <sys/stat.h>
 #include <sys/types.h>
-#include <sys/ioctl.h>
-#include <unistd.h>
 #include "linenoise.h"
+
+#define STDIN_FILENO _fileno(stdin)
+#define STDOUT_FILENO _fileno(stdout)
 
 #define LINENOISE_DEFAULT_HISTORY_MAX_LEN 100
 #define LINENOISE_MAX_LINE 4096
@@ -127,7 +128,7 @@ static char *linenoiseNoTTY(void);
 static void refreshLineWithCompletion(struct linenoiseState *ls, linenoiseCompletions *lc, int flags);
 static void refreshLineWithFlags(struct linenoiseState *l, int flags);
 
-static struct termios orig_termios; /* In order to restore at exit.*/
+static DWORD orig_conmode = 0; /* In order to restore at exit.*/
 static int maskmode = 0; /* Show "***" instead of input. For passwords. */
 static int rawmode = 0; /* For atexit() function to check if restore is needed*/
 static int mlmode = 0;  /* Multi line mode. Default is single line. */
@@ -212,109 +213,44 @@ static int isUnsupportedTerm(void) {
 
     if (term == NULL) return 0;
     for (j = 0; unsupported_term[j]; j++)
-        if (!strcasecmp(term,unsupported_term[j])) return 1;
+        if (!_stricmp(term,unsupported_term[j])) return 1;
     return 0;
 }
 
-/* Raw mode: 1960 magic shit. */
 static int enableRawMode(int fd) {
-    struct termios raw;
-
-    if (!isatty(STDIN_FILENO)) goto fatal;
-    if (!atexit_registered) {
-        atexit(linenoiseAtExit);
-        atexit_registered = 1;
+    HANDLE h = (HANDLE)_get_osfhandle(fd);
+    if (GetConsoleMode(h, &orig_conmode)) {
+        DWORD rawmode = orig_conmode;
+        rawmode &= ~ENABLE_LINE_INPUT;
+        rawmode &= ~ENABLE_ECHO_INPUT;
+        rawmode &= ~ENABLE_PROCESSED_INPUT;
+        if (SetConsoleMode(h, rawmode)) {
+            rawmode = 1;
+            return 0;
+        }
     }
-    if (tcgetattr(fd,&orig_termios) == -1) goto fatal;
-
-    raw = orig_termios;  /* modify the original mode */
-    /* input modes: no break, no CR to NL, no parity check, no strip char,
-     * no start/stop output control. */
-    raw.c_iflag &= ~(BRKINT | ICRNL | INPCK | ISTRIP | IXON);
-    /* output modes - disable post processing */
-    raw.c_oflag &= ~(OPOST);
-    /* control modes - set 8 bit chars */
-    raw.c_cflag |= (CS8);
-    /* local modes - choing off, canonical off, no extended functions,
-     * no signal chars (^Z,^C) */
-    raw.c_lflag &= ~(ECHO | ICANON | IEXTEN | ISIG);
-    /* control chars - set return condition: min number of bytes and timer.
-     * We want read to return every single byte, without timeout. */
-    raw.c_cc[VMIN] = 1; raw.c_cc[VTIME] = 0; /* 1 byte, no timer */
-
-    /* put terminal in raw mode after flushing */
-    if (tcsetattr(fd,TCSAFLUSH,&raw) < 0) goto fatal;
-    rawmode = 1;
-    return 0;
-
-fatal:
-    errno = ENOTTY;
     return -1;
 }
 
 static void disableRawMode(int fd) {
-    /* Don't even check the return value as it's too late. */
-    if (rawmode && tcsetattr(fd,TCSAFLUSH,&orig_termios) != -1)
-        rawmode = 0;
-}
-
-/* Use the ESC [6n escape sequence to query the horizontal cursor position
- * and return it. On error -1 is returned, on success the position of the
- * cursor. */
-static int getCursorPosition(int ifd, int ofd) {
-    char buf[32];
-    int cols, rows;
-    unsigned int i = 0;
-
-    /* Report cursor location */
-    if (write(ofd, "\x1b[6n", 4) != 4) return -1;
-
-    /* Read the response: ESC [ rows ; cols R */
-    while (i < sizeof(buf)-1) {
-        if (read(ifd,buf+i,1) != 1) break;
-        if (buf[i] == 'R') break;
-        i++;
+  if (rawmode) {
+    HANDLE h = (HANDLE)_get_osfhandle(fd);
+    if (SetConsoleMode(h, orig_conmode)) {
+      rawmode = 0;
     }
-    buf[i] = '\0';
-
-    /* Parse it. */
-    if (buf[0] != ESC || buf[1] != '[') return -1;
-    if (sscanf(buf+2,"%d;%d",&rows,&cols) != 2) return -1;
-    return cols;
+  }
 }
 
 /* Try to get the number of columns in the current terminal, or assume 80
  * if it fails. */
 static int getColumns(int ifd, int ofd) {
-    struct winsize ws;
-
-    if (ioctl(1, TIOCGWINSZ, &ws) == -1 || ws.ws_col == 0) {
-        /* ioctl() failed. Try to query the terminal itself. */
-        int start, cols;
-
-        /* Get the initial position so we can restore it later. */
-        start = getCursorPosition(ifd,ofd);
-        if (start == -1) goto failed;
-
-        /* Go to right margin and get position. */
-        if (write(ofd,"\x1b[999C",6) != 6) goto failed;
-        cols = getCursorPosition(ifd,ofd);
-        if (cols == -1) goto failed;
-
-        /* Restore position. */
-        if (cols > start) {
-            char seq[32];
-            snprintf(seq,32,"\x1b[%dD",cols-start);
-            if (write(ofd,seq,strlen(seq)) == -1) {
-                /* Can't recover... */
-            }
+    HANDLE h = (HANDLE)_get_osfhandle(ofd);
+    if (h != INVALID_HANDLE_VALUE) {
+        CONSOLE_SCREEN_BUFFER_INFO csbi;
+        if (GetConsoleScreenBufferInfo(h, &csbi)) {
+            return csbi.srWindow.Right - csbi.srWindow.Left + 1;
         }
-        return cols;
-    } else {
-        return ws.ws_col;
     }
-
-failed:
     return 80;
 }
 
@@ -884,7 +820,7 @@ int linenoiseEditStart(struct linenoiseState *l, int stdin_fd, int stdout_fd, ch
     /* Enter raw mode. */
     if (enableRawMode(l->ifd) == -1) return -1;
 
-    l->cols = getColumns(stdin_fd, stdout_fd);
+    l->cols = getColumns(l->ifd, l->ofd);
     l->oldrows = 0;
     l->history_index = 0;
 
@@ -903,6 +839,34 @@ int linenoiseEditStart(struct linenoiseState *l, int stdin_fd, int stdout_fd, ch
 
     if (write(l->ofd,prompt,l->plen) == -1) return -1;
     return 0;
+}
+
+/* read() on Windows acts weirdly when pressing Enter. It requires two presses
+ * to generate value. */
+static int read(int fd, char *c, unsigned size) {
+    HANDLE h = (HANDLE)_get_osfhandle(fd);
+    if (h == INVALID_HANDLE_VALUE) return -1;
+
+    INPUT_RECORD rec;
+    DWORD bytes;
+    while (1) {
+        if (!ReadConsoleInput(h, &rec, 1, &bytes)) return -1;
+        /* Skip all non-keyboard events. */
+        if (rec.EventType != KEY_EVENT) continue;
+        /* Skip key releases. */
+        if (!rec.Event.KeyEvent.bKeyDown) continue;
+        /* Enter generates special event on Windows, translate it to '\r'. */
+        if (rec.Event.KeyEvent.wVirtualKeyCode == VK_RETURN) {
+            *c = '\r';
+            break;
+        }
+        /* Skip non-ascii key presses. */
+        if (rec.Event.KeyEvent.uChar.AsciiChar) {
+            *c = rec.Event.KeyEvent.uChar.AsciiChar;
+            break;
+        }
+    }
+    return 1;
 }
 
 char *linenoiseEditMore = "If you see this, you are misusing the API: when linenoiseEditFeed() is called, if it returns linenoiseEditMore the user is yet editing the line. See the README file for more information.";
@@ -1315,16 +1279,10 @@ int linenoiseHistorySetMaxLen(int len) {
 /* Save the history in the specified file. On success 0 is returned
  * otherwise -1 is returned. */
 int linenoiseHistorySave(const char *filename) {
-    mode_t old_umask = umask(S_IXUSR|S_IRWXG|S_IRWXO);
-    FILE *fp;
-    int j;
-
-    fp = fopen(filename,"w");
-    umask(old_umask);
+    FILE *fp = fopen(filename,"w");
     if (fp == NULL) return -1;
-    fchmod(fileno(fp),S_IRUSR|S_IWUSR);
-    for (j = 0; j < history_len; j++)
-        fprintf(fp,"%s\n",history[j]);
+    for (int i = 0; i < history_len; i++)
+        fprintf(fp,"%s\n",history[i]);
     fclose(fp);
     return 0;
 }
