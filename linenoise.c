@@ -848,7 +848,7 @@ int linenoiseEditStart(struct linenoiseState *l, int stdin_fd, int stdout_fd, ch
 
 /* read() on Windows acts weirdly when pressing Enter. It requires two presses
  * to generate value. */
-static int read(int fd, char *c, unsigned size) {
+static int win_read(int fd, char *c, unsigned size) {
     HANDLE h = (HANDLE)_get_osfhandle(fd);
     if (h == INVALID_HANDLE_VALUE) return -1;
 
@@ -903,7 +903,7 @@ char *linenoiseEditFeed(struct linenoiseState *l) {
     int nread;
     char seq[3];
 
-    nread = read(l->ifd,&c,1);
+    nread = win_read(l->ifd,&c,1);
     if (nread < 0) {
         return (errno == EAGAIN || errno == EWOULDBLOCK) ? linenoiseEditMore : NULL;
     } else if (nread == 0) {
@@ -978,14 +978,14 @@ char *linenoiseEditFeed(struct linenoiseState *l) {
         /* Read the next two bytes representing the escape sequence.
          * Use two calls to handle slow terminals returning the two
          * chars at different times. */
-        if (read(l->ifd,seq,1) == -1) break;
-        if (read(l->ifd,seq+1,1) == -1) break;
+        if (win_read(l->ifd,seq,1) == -1) break;
+        if (win_read(l->ifd,seq+1,1) == -1) break;
 
         /* ESC [ sequences. */
         if (seq[0] == '[') {
             if (seq[1] >= '0' && seq[1] <= '9') {
                 /* Extended escape, read additional byte. */
-                if (read(l->ifd,seq+2,1) == -1) break;
+                if (win_read(l->ifd,seq+2,1) == -1) break;
                 if (seq[2] == '~') {
                     switch(seq[1]) {
                     case '3': /* Delete key. */
@@ -1104,7 +1104,7 @@ void linenoisePrintKeyCodes(void) {
         char c;
         int nread;
 
-        nread = read(STDIN_FILENO,&c,1);
+        nread = win_read(STDIN_FILENO,&c,1);
         if (nread <= 0) continue;
         memmove(quit,quit+1,sizeof(quit)-1); /* shift string to left. */
         quit[sizeof(quit)-1] = c; /* Insert current char on the right. */
