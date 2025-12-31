@@ -115,8 +115,13 @@
 #include <sys/types.h>
 #include "linenoise.h"
 
+#ifndef STDIN_FILENO
 #define STDIN_FILENO _fileno(stdin)
+#endif
+
+#ifndef STDOUT_FILENO
 #define STDOUT_FILENO _fileno(stdout)
+#endif
 
 #define LINENOISE_DEFAULT_HISTORY_MAX_LEN 100
 #define LINENOISE_MAX_LINE 4096
