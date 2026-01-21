@@ -1,5 +1,7 @@
 # Linenoise
 
+**This is an unofficial port of Linenoise to Windows.**
+
 A minimal, zero-config, BSD licensed, readline replacement used in Redis,
 MongoDB, Android and many other projects.
 
